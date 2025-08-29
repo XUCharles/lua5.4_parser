@@ -1,0 +1,424 @@
+//------------------------------------------------
+//--- 010 Editor v12.0.1 Binary Template
+//---
+//--- File: Luac54.bt
+//--- Authors: Assistant
+//--- Version: 3.1
+//--- Purpose: Parse Lua 5.4 bytecode files (基于Python解析脚本逻辑)
+//--- Category: Programming
+//--- File Mask: *.luac
+//--- ID Bytes: 1B 4C 75 61 54 //\x1bLuaT
+//--- History:
+//--- 3.1   2024-01-XX Assistant: 修复ProtoHeader重复定义和变长编码溢出问题
+//--- 3.0   2024-01-XX Assistant: 基于Python解析脚本重写，修正变长编码和字符串读取
+//--- 2.1   2024-01-XX Assistant: Fixed LuaString structure based on dumpString source code
+//--- 2.0   2024-01-XX Assistant: Fixed structure based on Lua 5.4 source code analysis
+//--- 1.0   2024-01-XX Assistant: Initial version
+//------------------------------------------------
+
+// Lua 5.4 字节码结构:
+// GlobalHeader + nupvalues + source + Proto (包含linedefined/lastlinedefined + Code + Constants + Upvalues + Protos + Debug)
+
+LittleEndian();
+
+// Lua 5.4 操作码枚举
+enum <uchar> OpCode {
+    OP_MOVE, OP_LOADI, OP_LOADF, OP_LOADK, OP_LOADKX, OP_LOADFALSE, OP_LFALSESKIP, OP_LOADTRUE, OP_LOADNIL,
+    OP_GETUPVAL, OP_SETUPVAL, OP_GETTABUP, OP_GETTABLE, OP_GETI, OP_GETFIELD, OP_SETTABUP, OP_SETTABLE,
+    OP_SETI, OP_SETFIELD, OP_NEWTABLE, OP_SELF, OP_ADDI, OP_ADDK, OP_SUBK, OP_MULK, OP_MODK, OP_POWK,
+    OP_DIVK, OP_IDIVK, OP_BANDK, OP_BORK, OP_BXORK, OP_SHRI, OP_SHLI, OP_ADD, OP_SUB, OP_MUL, OP_MOD,
+    OP_POW, OP_DIV, OP_IDIV, OP_BAND, OP_BOR, OP_BXOR, OP_SHL, OP_SHR, OP_MMBIN, OP_MMBINI, OP_MMBINK,
+    OP_UNM, OP_BNOT, OP_NOT, OP_LEN, OP_CONCAT, OP_CLOSE, OP_TBC, OP_JMP, OP_EQ, OP_LT, OP_LE, OP_EQK,
+    OP_EQI, OP_LTI, OP_LEI, OP_GTI, OP_GEI, OP_TEST, OP_TESTSET, OP_CALL, OP_TAILCALL, OP_RETURN,
+    OP_RETURN0, OP_RETURN1, OP_FORLOOP, OP_FORPREP, OP_TFORPREP, OP_TFORCALL, OP_TFORLOOP, OP_SETLIST,
+    OP_CLOSURE, OP_VARARG, OP_VARARGPREP, OP_EXTRAARG
+};
+
+// Lua 5.4 指令格式 (32位)
+typedef struct {
+    uint32 raw_instruction;     // 原始32位指令数据
+    local uchar opcode = raw_instruction & 0x7F;
+    local uint A = (raw_instruction >> 7) & 0xFF;
+    local uint B = (raw_instruction >> 16) & 0xFF;
+    local uint C = (raw_instruction >> 24) & 0xFF;
+    local uint Bx = (raw_instruction >> 15) & 0x1FFFF;
+    local int sBx = Bx - 0xFFFF;
+    local uint Ax = raw_instruction >> 7;
+    local int sJ = ((raw_instruction >> 7) & 0x1FFFFFF) - 0xFFFFFF;
+} Instruction <read=InstructionRead>;
+
+// 获取操作码名称
+string GetOpcodeName(uchar opcode) {
+    switch (opcode) {
+        case 0: return "MOVE";
+        case 1: return "LOADI";
+        case 2: return "LOADF";
+        case 3: return "LOADK";
+        case 4: return "LOADKX";
+        case 5: return "LOADFALSE";
+        case 6: return "LFALSESKIP";
+        case 7: return "LOADTRUE";
+        case 8: return "LOADNIL";
+        case 9: return "GETUPVAL";
+        case 10: return "SETUPVAL";
+        case 11: return "GETTABUP";
+        case 12: return "GETTABLE";
+        case 13: return "GETI";
+        case 14: return "GETFIELD";
+        case 15: return "SETTABUP";
+        case 16: return "SETTABLE";
+        case 17: return "SETI";
+        case 18: return "SETFIELD";
+        case 19: return "NEWTABLE";
+        case 20: return "SELF";
+        case 21: return "ADDI";
+        case 22: return "ADDK";
+        case 23: return "SUBK";
+        case 24: return "MULK";
+        case 25: return "MODK";
+        case 26: return "POWK";
+        case 27: return "DIVK";
+        case 28: return "IDIVK";
+        case 29: return "BANDK";
+        case 30: return "BORK";
+        case 31: return "BXORK";
+        case 32: return "SHRI";
+        case 33: return "SHLI";
+        case 34: return "ADD";
+        case 35: return "SUB";
+        case 36: return "MUL";
+        case 37: return "MOD";
+        case 38: return "POW";
+        case 39: return "DIV";
+        case 40: return "IDIV";
+        case 41: return "BAND";
+        case 42: return "BOR";
+        case 43: return "BXOR";
+        case 44: return "SHL";
+        case 45: return "SHR";
+        case 46: return "MMBIN";
+        case 47: return "MMBINI";
+        case 48: return "MMBINK";
+        case 49: return "UNM";
+        case 50: return "BNOT";
+        case 51: return "NOT";
+        case 52: return "LEN";
+        case 53: return "CONCAT";
+        case 54: return "CLOSE";
+        case 55: return "TBC";
+        case 56: return "JMP";
+        case 57: return "EQ";
+        case 58: return "LT";
+        case 59: return "LE";
+        case 60: return "EQK";
+        case 61: return "EQI";
+        case 62: return "LTI";
+        case 63: return "LEI";
+        case 64: return "GTI";
+        case 65: return "GEI";
+        case 66: return "TEST";
+        case 67: return "TESTSET";
+        case 68: return "CALL";
+        case 69: return "TAILCALL";
+        case 70: return "RETURN";
+        case 71: return "RETURN0";
+        case 72: return "RETURN1";
+        case 73: return "FORLOOP";
+        case 74: return "FORPREP";
+        case 75: return "TFORPREP";
+        case 76: return "TFORCALL";
+        case 77: return "TFORLOOP";
+        case 78: return "SETLIST";
+        case 79: return "CLOSURE";
+        case 80: return "VARARG";
+        case 81: return "VARARGPREP";
+        case 82: return "EXTRAARG";
+        default: return "UNKNOWN";
+    }
+}
+
+// 获取指令格式
+enum OpMode {
+    iABC = 0,
+    iABx = 1,
+    iAsBx = 2,
+    iAx = 3,
+    isJ = 4
+};
+
+// 获取指令模式
+OpMode GetInstructionMode(uchar opcode) {
+    switch (opcode) {
+        case 1: case 2: case 73: case 74: case 75: case 77: // LOADI, LOADF, FORLOOP, FORPREP, TFORPREP, TFORLOOP
+            return iAsBx;
+        case 3: case 4: case 79: // LOADK, LOADKX, CLOSURE
+            return iABx;
+        case 56: // JMP
+            return isJ;
+        case 82: // EXTRAARG
+            return iAx;
+        default:
+            return iABC;
+    }
+}
+
+// 指令反汇编函数
+string InstructionRead(Instruction &inst) {
+    local uint32 raw = inst.raw_instruction;
+    local uchar opcode = raw & 0x7F;
+    local string opname = GetOpcodeName(opcode);
+    local OpMode mode = GetInstructionMode(opcode);
+    local string result;
+    
+    local uint A = (raw >> 7) & 0xFF;
+    local uint B = (raw >> 16) & 0xFF;
+    local uint C = (raw >> 24) & 0xFF;
+    local uint Bx = (raw >> 15) & 0x1FFFF;
+    local int sBx = Bx - 0xFFFF;
+    local uint Ax = raw >> 7;
+    local int sJ = ((raw >> 7) & 0x1FFFFFF) - 0xFFFFFF;
+    
+    switch (mode) {
+        case iABC:
+            if (opcode == 0) { // MOVE
+                SPrintf(result, "[%d] %s R%d R%d ; R%d := R%d", opcode, opname, A, B, A, B);
+            } else if (opcode >= 5 && opcode <= 8) { // LOADFALSE, LFALSESKIP, LOADTRUE, LOADNIL
+                SPrintf(result, "[%d] %s R%d", opcode, opname, A);
+            } else if (opcode >= 9 && opcode <= 20) { // GETUPVAL, SETUPVAL, etc.
+                SPrintf(result, "[%d] %s R%d R%d R%d", opcode, opname, A, B, C);
+            } else if (opcode >= 21 && opcode <= 33) { // ADDI, ADDK, etc.
+                SPrintf(result, "[%d] %s R%d R%d %d", opcode, opname, A, B, C);
+            } else if (opcode >= 34 && opcode <= 55) { // ADD, SUB, etc.
+                SPrintf(result, "[%d] %s R%d R%d R%d", opcode, opname, A, B, C);
+            } else if (opcode >= 57 && opcode <= 67) { // EQ, LT, LE, etc.
+                SPrintf(result, "[%d] %s R%d R%d R%d", opcode, opname, A, B, C);
+            } else if (opcode >= 68 && opcode <= 72) { // CALL, TAILCALL, RETURN, etc.
+                SPrintf(result, "[%d] %s R%d %d %d", opcode, opname, A, B, C);
+            } else if (opcode >= 76 && opcode <= 81) { // TFORCALL, VARARG, etc.
+                SPrintf(result, "[%d] %s R%d %d %d", opcode, opname, A, B, C);
+            } else {
+                SPrintf(result, "[%d] %s R%d R%d R%d", opcode, opname, A, B, C);
+            }
+            break;
+        case iABx:
+            SPrintf(result, "[%d] %s R%d K%d", opcode, opname, A, Bx);
+            break;
+        case iAsBx:
+            SPrintf(result, "[%d] %s R%d %d", opcode, opname, A, sBx);
+            break;
+        case iAx:
+            SPrintf(result, "[%d] %s %d", opcode, opname, Ax);
+            break;
+        case isJ:
+            SPrintf(result, "[%d] %s %d", opcode, opname, sJ);
+            break;
+        default:
+            SPrintf(result, "[%d] %s (unknown format)", opcode, opname);
+            break;
+    }
+    
+    return result;
+}
+
+// 修正的变长编码读取函数（基于Python脚本的read_size逻辑）
+// 修正的变长编码读取函数（基于Python脚本的read_size逻辑）
+int ReadVarint() {
+    local int x = 0;
+    local int shift_count = 0;
+    local uchar b;
+    
+    while (true) {
+        // 防止无限循环和溢出 - 修正溢出检查逻辑
+        if (shift_count >= 56) {  // 修改为56位，对应Python中的(8*8-7)=57位限制
+            Printf("变长编码整数溢出\n");
+            return -1;
+        }
+        
+        b = ReadByte(FTell());
+        FSkip(1);
+        
+        // 将当前值左移7位，然后加上新字节的低7位
+        x = (x << 7) | (b & 0x7f);
+        shift_count += 7;
+        
+        // 如果最高位为1，说明这是最后一个字节
+        if ((b & 0x80) != 0) {
+            break;
+        }
+    }
+    
+    return x;
+}
+
+// 全局头部 (dumpHeader)
+struct GlobalHeader {
+    char signature[4];      // LUA_SIGNATURE "\x1bLua"
+    uchar version;          // LUAC_VERSION 0x54 for Lua 5.4
+    uchar format;           // LUAC_FORMAT 0x00
+    uchar luacdata[6];      // LUAC_DATA
+    uchar inst_size;        // sizeof(Instruction)
+    uchar lua_integer_size; // sizeof(lua_Integer)
+    uchar lua_number_size;  // sizeof(lua_Number)
+    int64 luac_int;         // LUAC_INT test
+    double luac_num;        // LUAC_NUM test
+};
+
+// 修正后的字符串读取（基于Python脚本的read_string逻辑）
+struct LuaString {
+    local uint size = ReadVarint();
+    if (size == 0) {
+        // NULL字符串
+        local string value = "";
+    } else {
+        // 长度包含null终止符，实际字符串长度要减1
+        // 添加边界检查，防止读取超出文件结尾
+        if (size > 1 && FTell() + size - 1 <= FileSize()) {
+            char str_data[size - 1];
+            local string value = str_data;
+        } else {
+            // 处理异常情况
+            local string value = "<invalid string>";
+        }
+    }
+};
+
+// 代码段 (dumpCode)
+struct Code {
+    local int sizecode = ReadVarint();
+    if (sizecode > 0) {
+        Instruction code[sizecode] <optimize=false>;  // 添加 optimize=false
+    }
+};
+
+// 常量 (dumpConstants) - 使用正确的Lua 5.4类型标签
+struct Constants {
+    local int sizek = ReadVarint();
+    if (sizek > 0) {
+        struct Constant {
+            uchar type;
+            switch (type) {
+                case 0:   // VNIL
+                    break;
+                case 17:  // VFALSE
+                    break;
+                case 33:  // VTRUE  
+                    break;
+                case 19:  // VNUMFLT
+                    double num_value;
+                    break;
+                case 35:  // VNUMINT
+                    int64 int_value;
+                    break;
+                case 20:  // VSHRSTR
+                case 36:  // VLNGSTR
+                    LuaString str;
+                    break;
+                default:
+                    // 处理其他可能的类型
+                    local uchar base_type = type & 0x0F;
+                    local uchar variant = (type >> 4) & 0x0F;
+                    if (base_type == 1) { // LUA_TBOOLEAN
+                        // 布尔值，无额外数据
+                    } else if (base_type == 3) { // LUA_TNUMBER
+                        if (variant == 0) {
+                            double num_value;
+                        } else {
+                            int64 int_value;
+                        }
+                    } else if (base_type == 4) { // LUA_TSTRING
+                        LuaString str;
+                    }
+                    break;
+            }
+        } constants[sizek] <optimize=false>;  // 添加 optimize=false
+    }
+};
+
+// Upvalues (dumpUpvalues)
+struct Upvalues {
+    local int sizeupvalues = ReadVarint();
+    if (sizeupvalues > 0) {
+        struct Upvalue {
+            uchar instack;
+            uchar idx;
+            uchar kind;
+        } upvalues[sizeupvalues] <optimize=false>;  // 添加 optimize=false
+    }
+};
+
+// 子Proto声明
+struct Proto;
+
+// 子Protos (dumpProtos)
+struct Protos {
+    local int sizep = ReadVarint();
+    if (sizep > 0) {
+        Proto protos[sizep] <optimize=false>;  // 添加 optimize=false
+    }
+};
+
+// 调试信息 (dumpDebug)
+struct Debug {
+    // Line info
+    local int sizelineinfo = ReadVarint();
+    if (sizelineinfo > 0) {
+        uchar lineinfo[sizelineinfo] <optimize=false>;  // 添加 optimize=false
+    }
+    
+    // Absolute line info
+    local int sizeabslineinfo = ReadVarint();
+    if (sizeabslineinfo > 0) {
+        struct AbsLineInfo {
+            local int pc = ReadVarint();
+            local int line = ReadVarint();
+        } abslineinfo[sizeabslineinfo] <optimize=false>;  // 添加 optimize=false
+    }
+    
+    // Local variables
+    local int sizelocvars = ReadVarint();
+    if (sizelocvars > 0) {
+        struct LocVar {
+            LuaString varname;
+            local int startpc = ReadVarint();
+            local int endpc = ReadVarint();
+        } locvars[sizelocvars] <optimize=false>;  // 添加 optimize=false
+    }
+    
+    // Upvalue names
+    local int sizeupvalnames = ReadVarint();
+    if (sizeupvalnames > 0) {
+        LuaString upvalue_names[sizeupvalnames] <optimize=false>;  // 添加 optimize=false
+    }
+};
+
+// Proto结构体（按照Python脚本的read_proto顺序）
+struct Proto {
+    LuaString source;                            // 1. 源文件名（子函数中可能为NULL）
+    
+    // 2-3. 使用变长编码读取linedefined和lastlinedefined（按照luaparse.py的read_int逻辑）
+    local int linedefined_val = ReadVarint();    // dumpInt(D, f->linedefined) - 变长编码
+    local int lastlinedefined_val = ReadVarint(); // dumpInt(D, f->lastlinedefined) - 变长编码
+    
+    // 为了在解析结果中显示这些值，创建可见字段
+    //int linedefined <hidden=true, read=Str("%d", linedefined_val)>;
+    //int lastlinedefined <hidden=true, read=Str("%d", lastlinedefined_val)>;
+    
+    // 4-6. 按正确顺序读取字节字段
+    uchar numparams;                             // 4. dumpByte(D, f->numparams)
+    uchar is_vararg;                             // 5. dumpByte(D, f->is_vararg)
+    uchar maxstacksize;                          // 6. dumpByte(D, f->maxstacksize)
+    
+    // 7-11. 按正确顺序读取各部分
+    Code code;                                   // 7. dumpCode(D, f) - 代码段
+    Constants constants;                         // 8. dumpConstants(D, f) - 常量表
+    Upvalues upvalues;                          // 9. dumpUpvalues(D, f) - upvalue信息
+    Protos protos;                              // 10. dumpProtos(D, f) - 子函数
+    Debug debug;                                // 11. dumpDebug(D, f) - 调试信息
+};
+
+// 修正后的主结构体（按照luaU_dump的正确顺序）
+struct Luac54 {
+    GlobalHeader global_header;  // dumpHeader(&D)
+    uchar nupvalues;            // dumpByte(&D, f->sizeupvalues)
+    Proto main_proto;           // 主函数Proto（包含source和所有字段）
+} luac54;
