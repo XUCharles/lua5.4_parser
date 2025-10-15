@@ -1,0 +1,344 @@
+//------------------------------------------------
+//--- 010 Editor v12.0.1 Binary Template
+//---
+//--- File: luac53.bt
+//--- Authors: Assistant
+//--- Version: 1.0
+//--- Purpose: Parse Lua 5.3 bytecode files (基于luaparse53.py脚本逻辑)
+//--- Category: Programming
+//--- File Mask: *.luac
+//--- ID Bytes: 1B 4C 75 61 53 //\x1bLua\x53
+//--- History:
+//--- 1.0   2024-01-XX Assistant: 基于luaparse53.py脚本创建Lua 5.3模板
+//------------------------------------------------
+
+// Lua 5.3 字节码结构:
+// GlobalHeader + nupvalues + Proto (包含source + linedefined/lastlinedefined + Code + Constants + Upvalues + Protos + Debug)
+
+LittleEndian();
+
+// Lua 5.3 操作码枚举 (47个操作码)
+enum <uchar> OpCode53 {
+    OP_MOVE = 0, OP_LOADK = 1, OP_LOADKX = 2, OP_LOADBOOL = 3, OP_LOADNIL = 4,
+    OP_GETUPVAL = 5, OP_GETTABUP = 6, OP_GETTABLE = 7, OP_SETTABUP = 8, OP_SETUPVAL = 9,
+    OP_SETTABLE = 10, OP_NEWTABLE = 11, OP_SELF = 12, OP_ADD = 13, OP_SUB = 14,
+    OP_MUL = 15, OP_MOD = 16, OP_POW = 17, OP_DIV = 18, OP_IDIV = 19,
+    OP_BAND = 20, OP_BOR = 21, OP_BXOR = 22, OP_SHL = 23, OP_SHR = 24,
+    OP_UNM = 25, OP_BNOT = 26, OP_NOT = 27, OP_LEN = 28, OP_CONCAT = 29,
+    OP_JMP = 30, OP_EQ = 31, OP_LT = 32, OP_LE = 33, OP_TEST = 34,
+    OP_TESTSET = 35, OP_CALL = 36, OP_TAILCALL = 37, OP_RETURN = 38, OP_FORLOOP = 39,
+    OP_FORPREP = 40, OP_TFORCALL = 41, OP_TFORLOOP = 42, OP_SETLIST = 43, OP_CLOSURE = 44,
+    OP_VARARG = 45, OP_EXTRAARG = 46
+};
+
+// Lua 5.3 指令格式 (32位，6位opcode)
+typedef struct {
+    uint32 raw_instruction;     // 原始32位指令数据
+    local uchar opcode = raw_instruction & 0x3F;  // 6位opcode
+    local uint A = (raw_instruction >> 6) & 0xFF;   // 8位A
+    local uint C = (raw_instruction >> 14) & 0x1FF; // 9位C
+    local uint B = (raw_instruction >> 23) & 0x1FF; // 9位B
+    local uint Bx = (raw_instruction >> 14) & 0x3FFFF; // 18位Bx
+    local int sBx = Bx - 131071;  // 有符号Bx (2^17-1)
+    local uint Ax = (raw_instruction >> 6) & 0x3FFFFFF; // 26位Ax
+} Instruction53 <read=Instruction53Read>;
+
+// 获取Lua 5.3操作码名称
+string GetOpcodeName53(uchar opcode) {
+    switch (opcode) {
+        case 0: return "MOVE";
+        case 1: return "LOADK";
+        case 2: return "LOADKX";
+        case 3: return "LOADBOOL";
+        case 4: return "LOADNIL";
+        case 5: return "GETUPVAL";
+        case 6: return "GETTABUP";
+        case 7: return "GETTABLE";
+        case 8: return "SETTABUP";
+        case 9: return "SETUPVAL";
+        case 10: return "SETTABLE";
+        case 11: return "NEWTABLE";
+        case 12: return "SELF";
+        case 13: return "ADD";
+        case 14: return "SUB";
+        case 15: return "MUL";
+        case 16: return "MOD";
+        case 17: return "POW";
+        case 18: return "DIV";
+        case 19: return "IDIV";
+        case 20: return "BAND";
+        case 21: return "BOR";
+        case 22: return "BXOR";
+        case 23: return "SHL";
+        case 24: return "SHR";
+        case 25: return "UNM";
+        case 26: return "BNOT";
+        case 27: return "NOT";
+        case 28: return "LEN";
+        case 29: return "CONCAT";
+        case 30: return "JMP";
+        case 31: return "EQ";
+        case 32: return "LT";
+        case 33: return "LE";
+        case 34: return "TEST";
+        case 35: return "TESTSET";
+        case 36: return "CALL";
+        case 37: return "TAILCALL";
+        case 38: return "RETURN";
+        case 39: return "FORLOOP";
+        case 40: return "FORPREP";
+        case 41: return "TFORCALL";
+        case 42: return "TFORLOOP";
+        case 43: return "SETLIST";
+        case 44: return "CLOSURE";
+        case 45: return "VARARG";
+        case 46: return "EXTRAARG";
+        default: return "UNKNOWN";
+    }
+}
+
+// Lua 5.3 指令格式枚举
+enum OpMode53 {
+    iABC = 0,
+    iABx = 1,
+    iAsBx = 2,
+    iAx = 3
+    // 注意：Lua 5.3 没有 isJ 模式
+};
+
+// 获取Lua 5.3指令模式
+OpMode53 GetInstructionMode53(uchar opcode) {
+    switch (opcode) {
+        case 1: case 2: case 44: // LOADK, LOADKX, CLOSURE
+            return iABx;
+        case 30: case 39: case 40: // JMP, FORLOOP, FORPREP
+            return iAsBx;
+        case 46: // EXTRAARG
+            return iAx;
+        default:
+            return iABC;
+    }
+}
+
+// Lua 5.3 指令反汇编函数
+string Instruction53Read(Instruction53 &inst) {
+    local uint32 raw = inst.raw_instruction;
+    local uchar opcode = raw & 0x3F;
+    local string opname = GetOpcodeName53(opcode);
+    local OpMode53 mode = GetInstructionMode53(opcode);
+    local string result;
+    
+    local uint A = (raw >> 6) & 0xFF;
+    local uint C = (raw >> 14) & 0x1FF;
+    local uint B = (raw >> 23) & 0x1FF;
+    local uint Bx = (raw >> 14) & 0x3FFFF;
+    local int sBx = Bx - 131071;
+    local uint Ax = (raw >> 6) & 0x3FFFFFF;
+    
+    switch (mode) {
+        case iABC:
+            if (opcode == 0) { // MOVE
+                SPrintf(result, "[%d] %s R%d R%d ; R%d := R%d", opcode, opname, A, B, A, B);
+            } else if (opcode >= 3 && opcode <= 4) { // LOADBOOL, LOADNIL
+                SPrintf(result, "[%d] %s R%d %d %d", opcode, opname, A, B, C);
+            } else if (opcode >= 5 && opcode <= 12) { // GETUPVAL, GETTABUP, etc.
+                SPrintf(result, "[%d] %s R%d R%d R%d", opcode, opname, A, B, C);
+            } else if (opcode >= 13 && opcode <= 29) { // ADD, SUB, etc.
+                SPrintf(result, "[%d] %s R%d R%d R%d", opcode, opname, A, B, C);
+            } else if (opcode >= 31 && opcode <= 38) { // EQ, LT, LE, etc.
+                SPrintf(result, "[%d] %s R%d R%d R%d", opcode, opname, A, B, C);
+            } else if (opcode >= 41 && opcode <= 43) { // TFORCALL, TFORLOOP, SETLIST
+                SPrintf(result, "[%d] %s R%d %d %d", opcode, opname, A, B, C);
+            } else if (opcode == 45) { // VARARG
+                SPrintf(result, "[%d] %s R%d %d", opcode, opname, A, B);
+            } else {
+                SPrintf(result, "[%d] %s R%d R%d R%d", opcode, opname, A, B, C);
+            }
+            break;
+        case iABx:
+            SPrintf(result, "[%d] %s R%d K%d", opcode, opname, A, Bx);
+            break;
+        case iAsBx:
+            SPrintf(result, "[%d] %s R%d %d", opcode, opname, A, sBx);
+            break;
+        case iAx:
+            SPrintf(result, "[%d] %s %d", opcode, opname, Ax);
+            break;
+        default:
+            SPrintf(result, "[%d] %s (unknown format)", opcode, opname);
+            break;
+    }
+    
+    return result;
+}
+
+// Lua 5.3 字符串长度读取函数（特殊编码方式）
+uint ReadStringSize53() {
+    local uchar first_byte = ReadByte(FTell());
+    FSkip(1);
+    
+    if (first_byte == 0xFF) {
+        // 长字符串，读取size_t
+        local uint64 size = ReadUInt64(FTell());
+        FSkip(8);
+        return size;
+    } else {
+        // 短字符串，直接使用第一个字节
+        return first_byte;
+    }
+}
+
+// 全局头部 (Lua 5.3)
+struct GlobalHeader53 {
+    char signature[4];      // LUA_SIGNATURE "\x1bLua"
+    uchar version;          // LUAC_VERSION 0x53 for Lua 5.3
+    uchar format;           // LUAC_FORMAT 0x00
+    uchar luacdata[6];      // LUAC_DATA
+    uchar int_size;         // sizeof(int)
+    uchar sizet_size;       // sizeof(size_t)
+    uchar inst_size;        // sizeof(Instruction)
+    uchar lua_integer_size; // sizeof(lua_Integer)
+    uchar lua_number_size;  // sizeof(lua_Number)
+    int64 luac_int;         // LUAC_INT test (0x5678)
+    double luac_num;        // LUAC_NUM test (370.5)
+};
+
+// Lua 5.3 字符串结构
+struct LuaString53 {
+    local uint size = ReadStringSize53();
+    if (size == 0) {
+        // NULL字符串
+        local string value = "";
+    } else {
+        // 长度包含null终止符，实际字符串长度要减1
+        if (size > 1 && FTell() + size - 1 <= FileSize()) {
+            char str_data[size - 1];
+            local string value = str_data;
+        } else {
+            // 处理异常情况
+            local string value = "<invalid string>";
+        }
+    }
+};
+
+// 代码段 (Lua 5.3)
+struct Code53 {
+    int32 sizecode;
+    if (sizecode > 0) {
+        Instruction53 code[sizecode] <optimize=false>;
+    }
+};
+
+// 常量 (Lua 5.3) - 使用Lua 5.3类型标签
+struct Constants53 {
+    int32 sizek;
+    if (sizek > 0) {
+        struct Constant53 {
+            uchar type;
+            switch (type) {
+                case 0:   // TNIL
+                    break;
+                case 1:   // TBOOLEAN
+                    uchar bool_value;
+                    break;
+                case 3:   // TNUMFLT (float)
+                    double num_value;
+                    break;
+                case 19:  // TNUMINT (integer)
+                    int64 int_value;
+                    break;
+                case 4:   // TSHRSTR (short string)
+                case 20:  // TLNGSTR (long string)
+                    LuaString53 str;
+                    break;
+                default:
+                    // 处理其他可能的类型
+                    local uchar base_type = type & 0x0F;
+                    local uchar variant = (type >> 4) & 0x0F;
+                    if (base_type == 1) { // LUA_TBOOLEAN
+                        uchar bool_value;
+                    } else if (base_type == 3) { // LUA_TNUMBER
+                        if (variant == 0) {
+                            double num_value;  // float
+                        } else {
+                            int64 int_value;   // integer
+                        }
+                    } else if (base_type == 4) { // LUA_TSTRING
+                        LuaString53 str;
+                    }
+                    break;
+            }
+        } constants[sizek] <optimize=false>;
+    }
+};
+
+// Upvalues (Lua 5.3) - 注意：没有kind字段
+struct Upvalues53 {
+    int32 sizeupvalues;
+    if (sizeupvalues > 0) {
+        struct Upvalue53 {
+            uchar instack;
+            uchar idx;
+            // 注意：Lua 5.3 没有 kind 字段
+        } upvalues[sizeupvalues] <optimize=false>;
+    }
+};
+
+// 子Proto声明
+struct Proto53;
+
+// 子Protos (Lua 5.3)
+struct Protos53 {
+    int32 sizep;
+    if (sizep > 0) {
+        Proto53 protos[sizep] <optimize=false>;
+    }
+};
+
+// 调试信息 (Lua 5.3) - 注意：没有绝对行号信息
+struct Debug53 {
+    // Line info
+    int32 sizelineinfo;
+    if (sizelineinfo > 0) {
+        int32 lineinfo[sizelineinfo] <optimize=false>;
+    }
+    
+    // Local variables
+    int32 sizelocvars;
+    if (sizelocvars > 0) {
+        struct LocVar53 {
+            LuaString53 varname;
+            int32 startpc;
+            int32 endpc;
+        } locvars[sizelocvars] <optimize=false>;
+    }
+    
+    // Upvalue names
+    int32 sizeupvalnames;
+    if (sizeupvalnames > 0) {
+        LuaString53 upvalue_names[sizeupvalnames] <optimize=false>;
+    }
+};
+
+// Proto结构体 (Lua 5.3)
+struct Proto53 {
+    LuaString53 source;         // 源文件名
+    int32 linedefined;          // 定义开始行号
+    int32 lastlinedefined;      // 定义结束行号
+    uchar numparams;            // 参数数量
+    uchar is_vararg;            // 是否可变参数
+    uchar maxstacksize;         // 最大栈大小
+    
+    Code53 code;                // 代码段
+    Constants53 constants;      // 常量表
+    Upvalues53 upvalues;        // upvalue信息
+    Protos53 protos;            // 子函数
+    Debug53 debug;              // 调试信息
+};
+
+// 主结构体 (Lua 5.3)
+struct Luac53 {
+    GlobalHeader53 global_header;  // 全局头部
+    uchar nupvalues;              // 主函数upvalue数量
+    Proto53 main_proto;           // 主函数Proto
+} luac53;

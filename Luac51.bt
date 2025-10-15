@@ -1,0 +1,377 @@
+//------------------------------------------------
+//--- 010 Editor v12.0.1 Binary Template
+//---
+//--- File: Luac51.bt
+//--- Authors: Assistant
+//--- Version: 1.0
+//--- Purpose: Parse Lua 5.1 bytecode files (基于Python解析脚本逻辑)
+//--- Category: Programming
+//--- File Mask: *.luac
+//--- ID Bytes: 1B 4C 75 61 51 //\x1bLua\x51
+//--- History:
+//--- 1.0   2024-01-XX Assistant: 基于luaparse51.py脚本创建Lua 5.1模板
+//------------------------------------------------
+
+// Lua 5.1 字节码结构:
+// GlobalHeader + Proto (包含source + linedefined/lastlinedefined + nups/numparams/is_vararg/maxstacksize + Code + Constants + Protos + Debug)
+
+LittleEndian();
+
+// Lua 5.1 操作码枚举 (38个操作码)
+enum <uchar> OpCode {
+    OP_MOVE = 0, OP_LOADK = 1, OP_LOADBOOL = 2, OP_LOADNIL = 3, OP_GETUPVAL = 4, OP_GETGLOBAL = 5,
+    OP_GETTABLE = 6, OP_SETGLOBAL = 7, OP_SETUPVAL = 8, OP_SETTABLE = 9, OP_NEWTABLE = 10, OP_SELF = 11,
+    OP_ADD = 12, OP_SUB = 13, OP_MUL = 14, OP_DIV = 15, OP_MOD = 16, OP_POW = 17, OP_UNM = 18, OP_NOT = 19,
+    OP_LEN = 20, OP_CONCAT = 21, OP_JMP = 22, OP_EQ = 23, OP_LT = 24, OP_LE = 25, OP_TEST = 26, OP_TESTSET = 27,
+    OP_CALL = 28, OP_TAILCALL = 29, OP_RETURN = 30, OP_FORLOOP = 31, OP_FORPREP = 32, OP_TFORLOOP = 33,
+    OP_SETLIST = 34, OP_CLOSE = 35, OP_CLOSURE = 36, OP_VARARG = 37
+};
+
+// 获取操作码名称
+string GetOpcodeName(uchar opcode) {
+    switch (opcode) {
+        case 0: return "MOVE";
+        case 1: return "LOADK";
+        case 2: return "LOADBOOL";
+        case 3: return "LOADNIL";
+        case 4: return "GETUPVAL";
+        case 5: return "GETGLOBAL";
+        case 6: return "GETTABLE";
+        case 7: return "SETGLOBAL";
+        case 8: return "SETUPVAL";
+        case 9: return "SETTABLE";
+        case 10: return "NEWTABLE";
+        case 11: return "SELF";
+        case 12: return "ADD";
+        case 13: return "SUB";
+        case 14: return "MUL";
+        case 15: return "DIV";
+        case 16: return "MOD";
+        case 17: return "POW";
+        case 18: return "UNM";
+        case 19: return "NOT";
+        case 20: return "LEN";
+        case 21: return "CONCAT";
+        case 22: return "JMP";
+        case 23: return "EQ";
+        case 24: return "LT";
+        case 25: return "LE";
+        case 26: return "TEST";
+        case 27: return "TESTSET";
+        case 28: return "CALL";
+        case 29: return "TAILCALL";
+        case 30: return "RETURN";
+        case 31: return "FORLOOP";
+        case 32: return "FORPREP";
+        case 33: return "TFORLOOP";
+        case 34: return "SETLIST";
+        case 35: return "CLOSE";
+        case 36: return "CLOSURE";
+        case 37: return "VARARG";
+        default: return "UNKNOWN";
+    }
+}
+
+// 获取指令格式
+enum OpMode {
+    iABC = 0,
+    iABx = 1,
+    iAsBx = 2
+};
+
+// 获取指令模式 (Lua 5.1)
+OpMode GetInstructionMode(uchar opcode) {
+    switch (opcode) {
+        case 1: case 5: case 7: case 36: // LOADK, GETGLOBAL, SETGLOBAL, CLOSURE
+            return iABx;
+        case 22: case 31: case 32: // JMP, FORLOOP, FORPREP
+            return iAsBx;
+        default:
+            return iABC;
+    }
+}
+
+// Lua 5.1 指令格式 (32位)
+typedef struct {
+    uint32 raw_instruction;     // 原始32位指令数据
+    local uchar opcode = raw_instruction & 0x3F;  // Lua 5.1: OpCode占6位
+    local uint A = (raw_instruction >> 6) & 0xFF;  // A占8位
+    local uint C = (raw_instruction >> 14) & 0x1FF; // C占9位
+    local uint B = (raw_instruction >> 23) & 0x1FF; // B占9位
+    local uint Bx = (raw_instruction >> 14) & 0x3FFFF; // Bx占18位
+    local int sBx = Bx - 131071;  // sBx = Bx - (2^17-1)
+} Instruction <read=InstructionRead>;
+
+// 指令反汇编函数
+string InstructionRead(Instruction &inst) {
+    local uint32 raw = inst.raw_instruction;
+    local uchar opcode = raw & 0x3F;
+    local string opname = GetOpcodeName(opcode);
+    local OpMode mode = GetInstructionMode(opcode);
+    local string result;
+    
+    local uint A = (raw >> 6) & 0xFF;
+    local uint C = (raw >> 14) & 0x1FF;
+    local uint B = (raw >> 23) & 0x1FF;
+    local uint Bx = (raw >> 14) & 0x3FFFF;
+    local int sBx = Bx - 131071;
+    
+    switch (mode) {
+        case iABC:
+            if (opcode == 0) { // MOVE
+                SPrintf(result, "[%d] %s R%d R%d ; R%d := R%d", opcode, opname, A, B, A, B);
+            } else if (opcode == 2) { // LOADBOOL
+                SPrintf(result, "[%d] %s R%d %d %d ; R%d := %s", opcode, opname, A, B, C, A, B ? "true" : "false");
+            } else if (opcode == 3) { // LOADNIL
+                SPrintf(result, "[%d] %s R%d R%d ; R%d to R%d := nil", opcode, opname, A, B, A, B);
+            } else if (opcode >= 4 && opcode <= 11) { // GETUPVAL, GETGLOBAL, etc.
+                SPrintf(result, "[%d] %s R%d R%d R%d", opcode, opname, A, B, C);
+            } else if (opcode >= 12 && opcode <= 21) { // ADD, SUB, etc.
+                SPrintf(result, "[%d] %s R%d RK%d RK%d", opcode, opname, A, B, C);
+            } else if (opcode >= 23 && opcode <= 27) { // EQ, LT, LE, TEST, TESTSET
+                SPrintf(result, "[%d] %s %d RK%d RK%d", opcode, opname, A, B, C);
+            } else if (opcode >= 28 && opcode <= 30) { // CALL, TAILCALL, RETURN
+                SPrintf(result, "[%d] %s R%d %d %d", opcode, opname, A, B, C);
+            } else if (opcode >= 33 && opcode <= 37) { // TFORLOOP, SETLIST, etc.
+                SPrintf(result, "[%d] %s R%d %d %d", opcode, opname, A, B, C);
+            } else {
+                SPrintf(result, "[%d] %s R%d R%d R%d", opcode, opname, A, B, C);
+            }
+            break;
+        case iABx:
+            SPrintf(result, "[%d] %s R%d K%d", opcode, opname, A, Bx);
+            break;
+        case iAsBx:
+            if (opcode == 22) { // JMP
+                SPrintf(result, "[%d] %s %d ; pc += %d", opcode, opname, sBx, sBx);
+            } else {
+                SPrintf(result, "[%d] %s R%d %d", opcode, opname, A, sBx);
+            }
+            break;
+        default:
+            SPrintf(result, "[%d] %s (unknown format)", opcode, opname);
+            break;
+    }
+    
+    return result;
+}
+
+// Lua 5.1 全局头部
+struct GlobalHeader {
+    char signature[4];      // LUA_SIGNATURE "\x1bLua"
+    uchar version;          // LUAC_VERSION 0x51 for Lua 5.1
+    uchar format;           // LUAC_FORMAT 0x00
+    uchar endianness;       // 1 = little endian, 0 = big endian
+    uchar size_int;         // sizeof(int)
+    uchar size_size_t;      // sizeof(size_t)
+    uchar size_instruction; // sizeof(Instruction)
+    uchar size_lua_number;  // sizeof(lua_Number)
+    uchar integral_flag;    // 0 = floating point, 1 = integral
+};
+
+// Lua 5.1 字符串读取 (使用size_t长度)
+struct LuaString {
+    local uint size;
+    
+    // 根据头部信息确定size_t大小
+    if (luac51.global_header.size_size_t == 4) {
+        uint32 size_val;
+        size = size_val;
+    } else {
+        uint64 size_val;
+        size = size_val;
+    }
+    
+    if (size == 0) {
+        local string value = "";
+    } else {
+        // Lua 5.1 字符串包含结尾的 \0
+        if (size > 1 && FTell() + size <= FileSize()) {
+            char str_data[size - 1];
+            uchar null_terminator; // 跳过 \0
+            local string value = str_data;
+        } else {
+            local string value = "<invalid string>";
+        }
+    }
+};
+
+// 代码段
+struct Code {
+    local uint sizecode;
+    
+    // 根据头部信息确定int大小
+    if (luac51.global_header.size_int == 4) {
+        uint32 sizecode_val;
+        sizecode = sizecode_val;
+    } else {
+        uint64 sizecode_val;
+        sizecode = sizecode_val;
+    }
+    
+    if (sizecode > 0) {
+        Instruction code[sizecode] <optimize=false>;
+    }
+};
+
+// Lua 5.1 数据类型枚举
+enum <uchar> LuaType {
+    LUA_TNIL = 0,
+    LUA_TBOOLEAN = 1,
+    LUA_TLIGHTUSERDATA = 2,
+    LUA_TNUMBER = 3,
+    LUA_TSTRING = 4,
+    LUA_TTABLE = 5,
+    LUA_TFUNCTION = 6,
+    LUA_TUSERDATA = 7,
+    LUA_TTHREAD = 8
+};
+
+// 常量表
+struct Constants {
+    local uint sizek;
+    
+    if (luac51.global_header.size_int == 4) {
+        uint32 sizek_val;
+        sizek = sizek_val;
+    } else {
+        uint64 sizek_val;
+        sizek = sizek_val;
+    }
+    
+    if (sizek > 0) {
+        struct Constant {
+            LuaType type;
+            switch (type) {
+                case LUA_TNIL:
+                    // nil值，无额外数据
+                    break;
+                case LUA_TBOOLEAN:
+                    uchar bool_value;
+                    break;
+                case LUA_TNUMBER:
+                    // 根据头部信息确定number大小
+                    if (luac51.global_header.size_lua_number == 8) {
+                        double num_value;
+                    } else {
+                        float num_value;
+                    }
+                    break;
+                case LUA_TSTRING:
+                    LuaString str_value;
+                    break;
+                default:
+                    // 其他类型暂不支持
+                    break;
+            }
+        } constants[sizek] <optimize=false>;
+    }
+};
+
+// 子Proto声明
+struct Proto;
+
+// 子函数原型
+struct Protos {
+    local uint sizep;
+    
+    if (luac51.global_header.size_int == 4) {
+        uint32 sizep_val;
+        sizep = sizep_val;
+    } else {
+        uint64 sizep_val;
+        sizep = sizep_val;
+    }
+    
+    if (sizep > 0) {
+        Proto protos[sizep] <optimize=false>;
+    }
+};
+
+// 调试信息
+struct Debug {
+    // 行号信息
+    local uint sizelineinfo;
+    if (luac51.global_header.size_int == 4) {
+        uint32 sizelineinfo_val;
+        sizelineinfo = sizelineinfo_val;
+    } else {
+        uint64 sizelineinfo_val;
+        sizelineinfo = sizelineinfo_val;
+    }
+    
+    if (sizelineinfo > 0) {
+        if (luac51.global_header.size_int == 4) {
+            uint32 lineinfo[sizelineinfo] <optimize=false>;
+        } else {
+            uint64 lineinfo[sizelineinfo] <optimize=false>;
+        }
+    }
+    
+    // 局部变量
+    local uint sizelocvars;
+    if (luac51.global_header.size_int == 4) {
+        uint32 sizelocvars_val;
+        sizelocvars = sizelocvars_val;
+    } else {
+        uint64 sizelocvars_val;
+        sizelocvars = sizelocvars_val;
+    }
+    
+    if (sizelocvars > 0) {
+        struct LocVar {
+            LuaString varname;
+            if (luac51.global_header.size_int == 4) {
+                uint32 startpc;
+                uint32 endpc;
+            } else {
+                uint64 startpc;
+                uint64 endpc;
+            }
+        } locvars[sizelocvars] <optimize=false>;
+    }
+    
+    // 上值名称
+    local uint sizeupvalnames;
+    if (luac51.global_header.size_int == 4) {
+        uint32 sizeupvalnames_val;
+        sizeupvalnames = sizeupvalnames_val;
+    } else {
+        uint64 sizeupvalnames_val;
+        sizeupvalnames = sizeupvalnames_val;
+    }
+    
+    if (sizeupvalnames > 0) {
+        LuaString upvalue_names[sizeupvalnames] <optimize=false>;
+    }
+};
+
+// Proto结构体（按照luaparse51.py的read_proto顺序）
+struct Proto {
+    LuaString source;           // 源文件名
+    
+    // 函数定义行号
+    if (luac51.global_header.size_int == 4) {
+        uint32 line_defined;
+        uint32 last_line_defined;
+    } else {
+        uint64 line_defined;
+        uint64 last_line_defined;
+    }
+    
+    uchar nups;                 // 上值数量
+    uchar num_params;           // 参数数量
+    uchar is_vararg;            // 是否可变参数
+    uchar max_stack_size;       // 最大栈大小
+    
+    Code code;                  // 指令代码
+    Constants constants;        // 常量表
+    Protos protos;             // 子函数
+    Debug debug;               // 调试信息
+};
+
+// 主结构体
+struct Luac51 {
+    GlobalHeader global_header; // 全局头部
+    Proto main_proto;          // 主函数原型
+} luac51;
