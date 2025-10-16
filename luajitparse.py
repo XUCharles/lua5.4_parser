@@ -5,6 +5,7 @@ LuaJIT 字节码解析器 - 完整版本
 支持 LuaJIT 2.0/2.1 字节码格式解析
 基于 010 Editor LuaJIT.bt 模板实现
 
+作者: xucheng05
 版本: 2.0
 """
 
@@ -322,6 +323,28 @@ class LuaJITParser:
         except UnicodeDecodeError:
             return data.decode('latin-1')
 
+    def read_null_terminated_string(self) -> str:
+        """
+        读取以 null 结尾的字符串
+
+        Returns:
+            解码后的字符串
+        """
+        start_pos = self.pos
+        while self.pos < self.size and self.data[self.pos] != 0:
+            self.pos += 1
+        
+        if self.pos >= self.size:
+            raise Exception("null 结尾字符串读取超出边界")
+        
+        data = self.data[start_pos:self.pos]
+        self.pos += 1  # 跳过 null 字节
+        
+        try:
+            return data.decode('utf-8')
+        except UnicodeDecodeError:
+            return data.decode('latin-1')
+
     def read_header(self) -> Dict[str, Any]:
         """
         读取 LuaJIT 文件头
@@ -561,27 +584,21 @@ class LuaJITParser:
                         line = self.read_byte()
                         proto.lineinfo.append(line)
 
-            # Upvalue 名称
+            # Upvalue 名称 - 010 Editor 模板中使用的是 null 结尾的字符串
             for i in range(proto.numuv):
-                name_len = self.read_uleb128()
-                if name_len > 0:
-                    name = self.read_string(name_len)
-                    proto.uvnames.append(name)
-                else:
-                    proto.uvnames.append("")
+                name = self.read_null_terminated_string()
+                proto.uvnames.append(name)
 
-            # 变量名
+            # 变量名 - 根据 010 Editor 模板的 VarInfos 结构
             while self.pos < self.size:
                 var_type = self.read_byte()
                 if var_type == VARNAME_END:
                     break
 
                 if var_type >= VARNAME_MAX:
-                    # 变量名字符串
-                    name_len = var_type - VARNAME_MAX
-                    if name_len > 0:
-                        name = self.read_string(name_len)
-                        proto.varnames.append(name)
+                    # 变量名字符串 - 使用 null 结尾字符串
+                    name = self.read_null_terminated_string()
+                    proto.varnames.append(name)
                 else:
                     # 特殊变量类型
                     proto.varnames.append(f"<type_{var_type}>")
